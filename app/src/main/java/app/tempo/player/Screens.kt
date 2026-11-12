@@ -1,5 +1,5 @@
 package app.tempo.player
-
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
