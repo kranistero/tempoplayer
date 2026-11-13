@@ -1,5 +1,5 @@
 package app.tempo.player
-import androidx.compose.animation.core.RepeatMode
+
 import android.content.Context
 import android.graphics.RenderEffect as AndroidRenderEffect
 import android.graphics.RuntimeShader
@@ -152,6 +152,11 @@ fun Modifier.recordBackdrop(b: Backdrop): Modifier = this
 
 // Lens refraction: near the rim the backdrop is bent (content from beyond the edge is pulled in)
 // with a slight RGB split, after the backdrop has been blurred.
+//
+// IMPORTANT: this effect must NOT be drawn under a canvas clip (no Modifier.clip before it).
+// A RenderEffect only "sees" the clipped region, so a clip makes every sample that lands outside
+// the button read as transparent (= black ring + untouched square in the middle + orange seams).
+// The rounded shape is therefore cut out here in the shader instead of with a clip.
 private const val AGSL = """
 uniform shader content;
 uniform float2 size;
@@ -170,6 +175,11 @@ half4 main(float2 fc) {
     float2 hs = shapeSize * 0.5;
     float r = min(radius, min(hs.x, hs.y));
     float d = sdRR(p, hs, r);
+
+    // anti-aliased cut-out of the button shape
+    float cov = clamp(0.5 - d, 0.0, 1.0);
+    if (cov <= 0.0) return half4(0.0);
+
     float2 g = float2(
         sdRR(p + float2(1.0, 0.0), hs, r) - sdRR(p - float2(1.0, 0.0), hs, r),
         sdRR(p + float2(0.0, 1.0), hs, r) - sdRR(p - float2(0.0, 1.0), hs, r));
@@ -179,31 +189,37 @@ half4 main(float2 fc) {
     float2 off = n * (t * strength);
     float2 lo = float2(0.5);
     float2 hi = size - float2(0.5);
+
+    half4 c0 = content.eval(clamp(fc, lo, hi));
     half4 cr = content.eval(clamp(fc + off * 0.90, lo, hi));
     half4 cg = content.eval(clamp(fc + off, lo, hi));
     half4 cb = content.eval(clamp(fc + off * 1.10, lo, hi));
-    return half4(cr.r, cg.g, cb.b, 1.0);
+    // safety net: if a sample ever lands on "nothing", use the undistorted pixel instead of black
+    if (cr.a < 0.99 || cg.a < 0.99 || cb.a < 0.99) { cr = c0; cg = c0; cb = c0; }
+
+    half k = half(cov);
+    return half4(half3(cr.r, cg.g, cb.b) * k, k);
 }
 """
 
 private class GlassFx {
     var coords: LayoutCoordinates? = null
-    private var shader: RuntimeShader? = null
     private var cached: ComposeRenderEffect? = null
-    private var k = FloatArray(7) { -1f }
+    private var k = FloatArray(8) { -1f }
 
     fun effect(pw: Float, ph: Float, w: Float, h: Float, r: Float, blur: Float, thick: Float, strength: Float): ComposeRenderEffect? {
-        val nk = floatArrayOf(pw, ph, w, h, r, blur, thick)
+        val nk = floatArrayOf(pw, ph, w, h, r, blur, thick, strength)
         if (nk.contentEquals(k)) return cached
         k = nk
         cached = try {
             val blurFx = AndroidRenderEffect.createBlurEffect(blur, blur, Shader.TileMode.CLAMP)
-            val s = shader ?: RuntimeShader(AGSL).also { shader = it }
+            val s = RuntimeShader(AGSL)          // fresh shader per change: never mutate one that is already in an effect
             s.setFloatUniform("size", pw, ph)
             s.setFloatUniform("shapeSize", w, h)
             s.setFloatUniform("radius", r)
             s.setFloatUniform("thickness", thick)
             s.setFloatUniform("strength", strength)
+            // inner (blur) runs first, then the refraction shader on the blurred result
             AndroidRenderEffect.createChainEffect(
                 AndroidRenderEffect.createRuntimeShaderEffect(s, "content"), blurFx
             ).asComposeRenderEffect()
@@ -218,6 +234,8 @@ private class GlassFx {
 /**
  * Liquid glass: blurs and refracts the live backdrop behind it, adds a soft tint, a sheen and a specular rim.
  * [smoke] darkens it (used where text must stay white), [selected] makes it brighter.
+ *
+ * Do not put Modifier.clip(...) in front of this modifier (see note on [AGSL]).
  */
 fun Modifier.glass(
     shape: Shape = RoundedCornerShape(28.dp),
@@ -230,6 +248,8 @@ fun Modifier.glass(
     val tone = LocalTone.current
     val fx = remember { GlassFx() }
     val layer = rememberGraphicsLayer()
+    // position is a state so the glass re-captures its backdrop on first layout and whenever it moves
+    var placedAt by remember { mutableStateOf(Offset.Unspecified) }
     val lightBg = tone.light && smoke == 0f
     val base = if (lightBg) Color.Black.copy(alpha = .05f) else Color.White.copy(alpha = .06f)
     val selTint = if (lightBg) Color.Black.copy(alpha = .10f) else Color.White.copy(alpha = .16f)
@@ -237,40 +257,54 @@ fun Modifier.glass(
     else listOf(Color.White.copy(alpha = .58f), Color.White.copy(alpha = .05f), Color.White.copy(alpha = .24f))
 
     this
-        .onGloballyPositioned { fx.coords = it }
-        .clip(shape)
+        .onGloballyPositioned {
+            fx.coords = it
+            val pos = it.positionInRoot()
+            if (pos != placedAt) placedAt = pos
+        }
         .drawBehind {
+            @Suppress("UNUSED_VARIABLE") val trigger = placedAt   // read state → redraw when it changes
+            val outline = shape.createOutline(size, layoutDirection, this)
+
             val b = backdrop
             val gc = fx.coords
             val bc = b?.coords
             if (b != null && gc != null && bc != null && gc.isAttached && bc.isAttached && size.minDimension > 2f) {
-                val pad = (blurDp * 2.2f * density).toInt()
                 val w = size.width.toInt()
                 val h = size.height.toInt()
+                val blurPx = blurDp * density
+                val r = (shape as? CornerBasedShape)?.topStart?.toPx(size, this) ?: 28.dp.toPx()
+                val thick = min(size.minDimension / 2f, 20.dp.toPx())
+                val strengthPx = thick * .85f * strength
+                // room around the button for the blur AND for the lens to sample from beyond the edge
+                val pad = kotlin.math.ceil(strengthPx + blurPx * 2.2f).toInt() + 2
                 val off = gc.positionInRoot() - bc.positionInRoot()
+
                 layer.record(size = IntSize(w + 2 * pad, h + 2 * pad)) {
                     translate(pad - off.x, pad - off.y) { drawLayer(b.layer) }
                 }
                 layer.topLeft = IntOffset(-pad, -pad)
-                val r = (shape as? CornerBasedShape)?.topStart?.toPx(size, this) ?: 28.dp.toPx()
-                val thick = min(size.minDimension / 2f, 20.dp.toPx())
+                layer.clip = false
                 layer.renderEffect = fx.effect(
                     (w + 2 * pad).toFloat(), (h + 2 * pad).toFloat(), w.toFloat(), h.toFloat(),
-                    r, blurDp * density, thick, thick * .85f * strength
+                    r, blurPx, thick, strengthPx
                 )
                 drawLayer(layer)
             }
-            drawRect(base)
-            if (selected) drawRect(selTint)
-            if (smoke > 0f) drawRect(Ink.copy(alpha = smoke))
-            drawRect(
-                brush = Brush.radialGradient(
+            // tint / sheen are clipped to the shape through the outline, not through a canvas clip
+            drawOutline(outline, base)
+            if (selected) drawOutline(outline, selTint)
+            if (smoke > 0f) drawOutline(outline, Ink.copy(alpha = smoke))
+            drawOutline(
+                outline,
+                Brush.radialGradient(
                     listOf(Color.White.copy(alpha = .12f * strength), Color.Transparent),
                     center = Offset(size.width * .12f, 0f), radius = size.maxDimension * .8f
                 )
             )
         }
         .border(1.dp, Brush.linearGradient(rim), shape)
+        .clip(shape)   // only clips the content (icons/text) – safely AFTER the glass layer is drawn
 }
 
 // ═════════════════════ background ═════════════════════
