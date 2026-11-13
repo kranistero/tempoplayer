@@ -314,7 +314,7 @@ fun Modifier.glass(
 fun AuroraBackground(cover: CoverColors, modifier: Modifier = Modifier, artUrl: String? = null) {
     val inf = rememberInfiniteTransition(label = "aurora")
     val phase by inf.animateFloat(
-        0f, 1f, infiniteRepeatable(tween(18000, easing = LinearEasing), RepeatMode.Reverse), label = "phase"
+        0f, 1f, infiniteRepeatable(tween(18000, easing = LinearEasing), androidx.compose.animation.core.RepeatMode.Reverse), label = "phase"
     )
     Box(modifier.background(cover.c)) {
         if (artUrl != null) AsyncImage(
