@@ -1,5 +1,5 @@
 package app.tempo.player
-import androidx.compose.animation.core.RepeatMode
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
@@ -63,20 +63,6 @@ fun EmptyState(title: String, body: String, onImport: () -> Unit) {
     }
 }
 
-/** Little animated equaliser shown on the song that is playing. */
-@Composable
-fun Equalizer(playing: Boolean, color: Color) {
-    val inf = rememberInfiniteTransition(label = "eq")
-    val h1 by inf.animateFloat(.25f, 1f, infiniteRepeatable(tween(520), RepeatMode.Reverse), label = "h1")
-    val h2 by inf.animateFloat(1f, .3f, infiniteRepeatable(tween(430), RepeatMode.Reverse), label = "h2")
-    val h3 by inf.animateFloat(.4f, .9f, infiniteRepeatable(tween(610), RepeatMode.Reverse), label = "h3")
-    Row(Modifier.height(16.dp).width(18.dp), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom) {
-        listOf(h1, h2, h3).forEach { h ->
-            Box(Modifier.width(4.dp).fillMaxHeight(if (playing) h else .25f).clip(CircleShape).background(color))
-        }
-    }
-}
-
 // ═════════════════════ rows ═════════════════════
 
 @Composable
@@ -85,7 +71,6 @@ fun SongRow(
     trailing: @Composable () -> Unit = {}
 ) {
     val tone = LocalTone.current
-    val playing by PlaybackManager.isPlaying.collectAsState()
     val shape = RoundedCornerShape(26.dp)
     Row(
         modifier.fillMaxWidth().padding(vertical = 3.dp).bounceClick(onClick = onClick)
@@ -99,7 +84,7 @@ fun SongRow(
             Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (active) FontWeight.ExtraBold else FontWeight.SemiBold)
             Text(t.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, color = tone.dim, fontSize = 13.sp)
         }
-        if (active) { Equalizer(playing, tone.on); Spacer(Modifier.width(10.dp)) }
+        if (active) { Icon(Icons.Rounded.GraphicEq, null, Modifier.size(20.dp)); Spacer(Modifier.width(10.dp)) }
         Text(fmt(t.durationMs), color = tone.dim, fontSize = 12.sp)
         trailing()
     }
@@ -273,8 +258,7 @@ fun MiniPlayer(t: Track, onOpen: () -> Unit) {
             kotlinx.coroutines.delay(500)
         }
     }
-    val animProg by animateFloatAsState(prog.coerceIn(0f, 1f), tween(450, easing = LinearEasing), label = "mp")
-    Box(Modifier.fillMaxWidth().bounceClick(onClick = onOpen).glass(RoundedCornerShape(30.dp), 1.2f, blurDp = 18f)) {
+    Box(Modifier.fillMaxWidth().bounceClick(onClick = onOpen).glass(RoundedCornerShape(30.dp), 1.2f, blurDp = 12f)) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Art(t.artworkUrl, Modifier.size(50.dp), 16.dp)
             Spacer(Modifier.width(12.dp))
@@ -289,7 +273,7 @@ fun MiniPlayer(t: Track, onOpen: () -> Unit) {
             IconButton(onClick = { PlaybackManager.next() }) { Icon(Icons.Rounded.SkipNext, "Next", Modifier.size(28.dp)) }
         }
         LinearProgressIndicator(
-            progress = { animProg },
+            progress = { prog.coerceIn(0f, 1f) },
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 26.dp).height(2.dp),
             color = tone.on, trackColor = tone.on.copy(alpha = .15f)
         )
@@ -299,7 +283,7 @@ fun MiniPlayer(t: Track, onOpen: () -> Unit) {
 @Composable
 fun NavBar(tab: Int, onTab: (Int) -> Unit, onImport: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().glass(CircleShape, 1.1f, blurDp = 18f).padding(6.dp),
+        Modifier.fillMaxWidth().glass(CircleShape, 1.1f, blurDp = 12f).padding(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         NavItem("Songs", Icons.Rounded.MusicNote, tab == 0, Modifier.weight(1f)) { onTab(0) }

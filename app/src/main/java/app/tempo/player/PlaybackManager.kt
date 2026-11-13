@@ -25,7 +25,7 @@ import kotlin.math.roundToInt
 const val MIN_SPEED = 0.45f
 const val MAX_SPEED = 1.35f
 
-enum class RepeatMode { OFF, ALL, ONE }
+enum class LoopMode { OFF, ALL, ONE }
 
 object PlaybackManager {
     lateinit var player: ExoPlayer
@@ -43,7 +43,7 @@ object PlaybackManager {
     val error = MutableStateFlow<String?>(null)
     val speed = MutableStateFlow(1.00f)
     val shuffle = MutableStateFlow(false)
-    val repeat = MutableStateFlow(RepeatMode.OFF)
+    val repeat = MutableStateFlow(LoopMode.OFF)
     val sleepAt = MutableStateFlow<Long?>(null)
 
     fun init(ctx: Context) {
@@ -78,7 +78,7 @@ object PlaybackManager {
 
     fun toggleShuffle() { shuffle.value = !shuffle.value; rebuildOrder(index.value) }
     fun cycleRepeat() {
-        repeat.value = when (repeat.value) { RepeatMode.OFF -> RepeatMode.ALL; RepeatMode.ALL -> RepeatMode.ONE; RepeatMode.ONE -> RepeatMode.OFF }
+        repeat.value = when (repeat.value) { LoopMode.OFF -> LoopMode.ALL; LoopMode.ALL -> LoopMode.ONE; LoopMode.ONE -> LoopMode.OFF }
     }
 
     fun playIndex(i: Int) {
@@ -110,10 +110,10 @@ object PlaybackManager {
 
     fun next(auto: Boolean = false) {
         if (queue.value.isEmpty()) return
-        if (auto && repeat.value == RepeatMode.ONE) { playIndex(index.value); return }
+        if (auto && repeat.value == LoopMode.ONE) { playIndex(index.value); return }
         val np = order.indexOf(index.value) + 1
         if (np >= order.size) {
-            if (auto && repeat.value == RepeatMode.OFF) { player.seekTo(0); player.pause(); return }
+            if (auto && repeat.value == LoopMode.OFF) { player.seekTo(0); player.pause(); return }
             playIndex(order.firstOrNull() ?: 0)
         } else playIndex(order[np])
     }

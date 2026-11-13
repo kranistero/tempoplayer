@@ -151,8 +151,8 @@ fun PlayerScreen(t: Track, onClose: () -> Unit) {
                         }
                     }
                     GlassCircle(58.dp, { PlaybackManager.next() }) { Icon(Icons.Rounded.SkipNext, "Next", Modifier.size(34.dp)) }
-                    GlassCircle(48.dp, { PlaybackManager.cycleRepeat() }, selected = repeat != RepeatMode.OFF) {
-                        Icon(if (repeat == RepeatMode.ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Repeat")
+                    GlassCircle(48.dp, { PlaybackManager.cycleRepeat() }, selected = repeat != LoopMode.OFF) {
+                        Icon(if (repeat == LoopMode.ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Repeat")
                     }
                 }
 

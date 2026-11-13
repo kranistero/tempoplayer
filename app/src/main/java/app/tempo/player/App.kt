@@ -52,7 +52,7 @@ fun App(vm: LibraryViewModel = viewModel()) {
     CompositionLocalProvider(LocalCover provides cover, LocalTone provides tone, LocalContentColor provides tone.on) {
         Box(Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize().recordBackdrop(bdB)) {
-                Box(Modifier.fillMaxSize().recordBackdrop(bdA)) { AuroraBackground(cover, Modifier.fillMaxSize()) }
+                Box(Modifier.fillMaxSize().recordBackdrop(bdA)) { AuroraBackground(cover, Modifier.fillMaxSize(), artUrl = current?.artworkUrl, artAlpha = .38f) }
 
                 CompositionLocalProvider(LocalBackdrop provides bdA) {
                     val screenKey = openPlaylist ?: if (tab == 0) "songs" else "playlists"

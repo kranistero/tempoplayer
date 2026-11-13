@@ -176,7 +176,7 @@ half4 main(float2 fc) {
     float r = min(radius, min(hs.x, hs.y));
     float d = sdRR(p, hs, r);
 
-    // anti-aliased cut-out of the button shape
+    // anti-aliased cut-out of the button shape (done here instead of with a canvas clip)
     float cov = clamp(0.5 - d, 0.0, 1.0);
     if (cov <= 0.0) return half4(0.0);
 
@@ -184,21 +184,31 @@ half4 main(float2 fc) {
         sdRR(p + float2(1.0, 0.0), hs, r) - sdRR(p - float2(1.0, 0.0), hs, r),
         sdRR(p + float2(0.0, 1.0), hs, r) - sdRR(p - float2(0.0, 1.0), hs, r));
     float2 n = normalize(g + float2(0.0001));
-    float t = clamp(1.0 + d / thickness, 0.0, 1.0);
-    t = t * t * (3.0 - 2.0 * t);
-    float2 off = n * (t * strength);
+    float e = clamp(1.0 + d / thickness, 0.0, 1.0);      // 0 inside ... 1 at the rim
+    float bend = e * e * (3.0 - 2.0 * e);
+    float2 off = n * (bend * strength);
     float2 lo = float2(0.5);
     float2 hi = size - float2(0.5);
 
     half4 c0 = content.eval(clamp(fc, lo, hi));
-    half4 cr = content.eval(clamp(fc + off * 0.90, lo, hi));
+    half4 cr = content.eval(clamp(fc + off * 0.94, lo, hi));
     half4 cg = content.eval(clamp(fc + off, lo, hi));
-    half4 cb = content.eval(clamp(fc + off * 1.10, lo, hi));
-    // safety net: if a sample ever lands on "nothing", use the undistorted pixel instead of black
+    half4 cb = content.eval(clamp(fc + off * 1.06, lo, hi));
+    // safety net: a sample that lands on "nothing" falls back to the undistorted pixel
     if (cr.a < 0.99 || cg.a < 0.99 || cb.a < 0.99) { cr = c0; cg = c0; cb = c0; }
 
+    float3 col = float3(cr.r, cg.g, cb.b);
+    float l = dot(col, float3(0.299, 0.587, 0.114));
+    col = mix(float3(l), col, 1.2);                       // vibrancy
+
+    // glass bezel: bright edge, brightest on the top-left
+    float facing = dot(n, normalize(float2(-0.6, -0.8)));
+    float rim = bend * bend;
+    col += float3(rim * (0.10 + 0.32 * max(facing, 0.0)));
+    col = clamp(col, 0.0, 1.0);
+
     half k = half(cov);
-    return half4(half3(cr.r, cg.g, cb.b) * k, k);
+    return half4(half3(col) * k, k);
 }
 """
 
@@ -212,17 +222,16 @@ private class GlassFx {
         if (nk.contentEquals(k)) return cached
         k = nk
         cached = try {
-            val blurFx = AndroidRenderEffect.createBlurEffect(blur, blur, Shader.TileMode.CLAMP)
+            val blurFx = AndroidRenderEffect.createBlurEffect(maxOf(blur, 0.1f), maxOf(blur, 0.1f), Shader.TileMode.CLAMP)
             val s = RuntimeShader(AGSL)          // fresh shader per change: never mutate one that is already in an effect
             s.setFloatUniform("size", pw, ph)
             s.setFloatUniform("shapeSize", w, h)
             s.setFloatUniform("radius", r)
             s.setFloatUniform("thickness", thick)
             s.setFloatUniform("strength", strength)
+            val shaderFx = AndroidRenderEffect.createRuntimeShaderEffect(s, "content")
             // inner (blur) runs first, then the refraction shader on the blurred result
-            AndroidRenderEffect.createChainEffect(
-                AndroidRenderEffect.createRuntimeShaderEffect(s, "content"), blurFx
-            ).asComposeRenderEffect()
+            (if (blur > 0f) AndroidRenderEffect.createChainEffect(shaderFx, blurFx) else shaderFx).asComposeRenderEffect()
         } catch (e: Throwable) {
             try { AndroidRenderEffect.createBlurEffect(blur, blur, Shader.TileMode.CLAMP).asComposeRenderEffect() }
             catch (e2: Throwable) { null }
@@ -242,14 +251,12 @@ fun Modifier.glass(
     strength: Float = 1f,
     smoke: Float = 0f,
     selected: Boolean = false,
-    blurDp: Float = 14f
+    blurDp: Float = 10f
 ): Modifier = composed {
     val backdrop = LocalBackdrop.current
     val tone = LocalTone.current
     val fx = remember { GlassFx() }
     val layer = rememberGraphicsLayer()
-    // position is a state so the glass re-captures its backdrop on first layout and whenever it moves
-    var placedAt by remember { mutableStateOf(Offset.Unspecified) }
     val lightBg = tone.light && smoke == 0f
     val base = if (lightBg) Color.Black.copy(alpha = .05f) else Color.White.copy(alpha = .06f)
     val selTint = if (lightBg) Color.Black.copy(alpha = .10f) else Color.White.copy(alpha = .16f)
@@ -257,13 +264,8 @@ fun Modifier.glass(
     else listOf(Color.White.copy(alpha = .58f), Color.White.copy(alpha = .05f), Color.White.copy(alpha = .24f))
 
     this
-        .onGloballyPositioned {
-            fx.coords = it
-            val pos = it.positionInRoot()
-            if (pos != placedAt) placedAt = pos
-        }
+        .onGloballyPositioned { fx.coords = it }
         .drawBehind {
-            @Suppress("UNUSED_VARIABLE") val trigger = placedAt   // read state → redraw when it changes
             val outline = shape.createOutline(size, layoutDirection, this)
 
             val b = backdrop
@@ -272,10 +274,11 @@ fun Modifier.glass(
             if (b != null && gc != null && bc != null && gc.isAttached && bc.isAttached && size.minDimension > 2f) {
                 val w = size.width.toInt()
                 val h = size.height.toInt()
-                val blurPx = blurDp * density
+                // small buttons skip the (expensive) blur pass, only bigger surfaces blur
+                val blurPx = if (size.minDimension < 64.dp.toPx()) 0f else blurDp * density
                 val r = (shape as? CornerBasedShape)?.topStart?.toPx(size, this) ?: 28.dp.toPx()
-                val thick = min(size.minDimension / 2f, 20.dp.toPx())
-                val strengthPx = thick * .85f * strength
+                val thick = min(size.minDimension / 2f, 22.dp.toPx())
+                val strengthPx = thick * 1.0f * strength
                 // room around the button for the blur AND for the lens to sample from beyond the edge
                 val pad = kotlin.math.ceil(strengthPx + blurPx * 2.2f).toInt() + 2
                 val off = gc.positionInRoot() - bc.positionInRoot()
@@ -309,24 +312,23 @@ fun Modifier.glass(
 
 // ═════════════════════ background ═════════════════════
 
-/** Cover-coloured glow background (grey for black/white covers) that slowly drifts. */
+/** Cover-coloured glow background (grey for black/white covers). Static on purpose: cheap and no lag. */
 @Composable
-fun AuroraBackground(cover: CoverColors, modifier: Modifier = Modifier, artUrl: String? = null) {
-    val inf = rememberInfiniteTransition(label = "aurora")
-    val phase by inf.animateFloat(
-        0f, 1f, infiniteRepeatable(tween(18000, easing = LinearEasing), androidx.compose.animation.core.RepeatMode.Reverse), label = "phase"
-    )
+fun AuroraBackground(cover: CoverColors, modifier: Modifier = Modifier, artUrl: String? = null, artAlpha: Float = .42f) {
+    val ctx = LocalContext.current
     Box(modifier.background(cover.c)) {
+        // a tiny bitmap scaled up is already smooth/blurry - no expensive full-screen blur effect needed
         if (artUrl != null) AsyncImage(
-            model = artUrl, contentDescription = null, contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize().blur(80.dp).alpha(.42f)
+            model = ImageRequest.Builder(ctx).data(artUrl).size(72).build(),
+            contentDescription = null, contentScale = ContentScale.Crop, filterQuality = FilterQuality.High,
+            modifier = Modifier.fillMaxSize().alpha(artAlpha)
         )
         Box(
             Modifier.fillMaxSize().drawBehind {
-                val w = size.width; val h = size.height; val p = phase
-                drawRect(brush = Brush.radialGradient(listOf(cover.a.copy(alpha = .9f), Color.Transparent), Offset(w * (.02f + .14f * p), h * (.06f + .06f * p)), w * 1.15f))
-                drawRect(brush = Brush.radialGradient(listOf(cover.b.copy(alpha = .9f), Color.Transparent), Offset(w * (.98f - .14f * p), h * (.20f - .06f * p)), w * 1.15f))
-                drawRect(brush = Brush.radialGradient(listOf(lerp(cover.a, cover.b, .5f).copy(alpha = .55f), Color.Transparent), Offset(w * (.3f + .4f * p), h * .95f), w * 1.0f))
+                val w = size.width; val h = size.height
+                drawRect(brush = Brush.radialGradient(listOf(cover.a.copy(alpha = .85f), Color.Transparent), Offset(w * .08f, h * .09f), w * 1.15f))
+                drawRect(brush = Brush.radialGradient(listOf(cover.b.copy(alpha = .85f), Color.Transparent), Offset(w * .92f, h * .17f), w * 1.15f))
+                drawRect(brush = Brush.radialGradient(listOf(lerp(cover.a, cover.b, .5f).copy(alpha = .5f), Color.Transparent), Offset(w * .5f, h * .95f), w * 1.0f))
             }
         )
     }
